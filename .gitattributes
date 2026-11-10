@@ -1,0 +1,9 @@
+# Normalize line endings so Windows (CRLF) and Linux (LF) stop fighting in git diffs
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.glb binary
+*.woff2 binary
