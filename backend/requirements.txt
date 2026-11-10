@@ -1,0 +1,13 @@
+# Top-level dependencies only (UTF-8, Linux-safe). Pip resolves the rest.
+fastapi==0.141.1
+uvicorn[standard]
+python-multipart==0.0.32
+python-dotenv==1.2.3
+pydantic==2.13.5
+httpx==0.28.1
+neo4j==6.4.0
+certifi
+qdrant-client==1.19.0
+google-genai==2.29.0
+# TEMPORARY: current main.py still imports replicate. Removed in Step 2.
+replicate==1.0.7
