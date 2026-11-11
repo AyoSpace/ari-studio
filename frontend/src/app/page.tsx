@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import React, { useState, useRef } from "react";
 import { Sparkles, Mic, Image as ImageIcon, Layers, ChevronRight, SlidersHorizontal, Loader2, User, Shirt, X } from "lucide-react";
