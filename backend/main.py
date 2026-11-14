@@ -1,203 +1,139 @@
+import asyncio
+import logging
 import os
-import urllib.parse
+from typing import List, Optional
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import httpx
-import replicate
 
-# Load environment variables
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
-# Initialize FastAPI App FIRST before middleware
+import providers  # noqa: E402  (after load_dotenv)
+
+log = logging.getLogger("ari")
+
 app = FastAPI(title="ARI Studio Multi-Modal ACIE Engine")
 
-# Add CORS Middleware
+# In production set ALLOWED_ORIGINS="https://your-app.vercel.app,http://localhost:3000"
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Environment credentials
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-REPLICATE_TOKEN = os.getenv("REPLICATE_API_TOKEN")
-TRIPO3D_KEY = os.getenv("TRIPO3D_API_KEY")
-NEO4J_URI = os.getenv("NEO4J_URI")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
-
-# Initialize Gemini Client
-gemini_client = None
-if GEMINI_KEY:
-    try:
-        from google import genai
-        gemini_client = genai.Client(api_key=GEMINI_KEY)
-    except Exception as e:
-        print(f"Gemini Client Init Note: {e}")
-
-# Initialize Neo4j Driver
+# ------------------------------------------------------------------ Neo4j ----
 neo4j_driver = None
-if NEO4J_URI and NEO4J_USERNAME and NEO4J_PASSWORD:
+_uri, _user, _pw = (os.getenv(k, "").strip() for k in ("NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"))
+if _uri and _user and _pw:
     try:
         from neo4j import GraphDatabase
-        neo4j_driver = GraphDatabase.driver(
-            NEO4J_URI, 
-            auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
-        )
-        print("Connected to Neo4j Knowledge Graph database.")
-    except Exception as e:
-        print(f"Neo4j Connection Note: {e}")
 
-def query_knowledge_graph(prompt_text: str):
-    """
-    Queries Neo4j for matching textile nodes, jewelry pairings, and color palettes.
-    Provides structured fallback graph context if DB is unpopulated.
-    """
-    if neo4j_driver:
+        neo4j_driver = GraphDatabase.driver(_uri, auth=(_user, _pw))
+        log.info("Neo4j driver created.")
+    except Exception as e:  # noqa: BLE001
+        log.warning("Neo4j connection note: %s", e)
+
+DEFAULT_PALETTE = ["#1A1714", "#4A4E69", "#7A2E22", "#D4AF37"]
+
+
+def query_knowledge_graph(prompt_text: str, root_lens: str = "") -> dict:
+    """Blocking; call via asyncio.to_thread. Enrichment only. (Graph schema fix comes in a later step.)"""
+    keywords = [w.strip(".,!?").lower() for w in prompt_text.split() if len(w) > 3]
+    if root_lens:
+        keywords.append(root_lens.lower())
+
+    if neo4j_driver and keywords:
         try:
             with neo4j_driver.session() as session:
-                query = """
-                MATCH (t:Textile)-[:PAIRS_WITH]->(j:Jewelry)
-                WHERE toLower(t.name) CONTAINS toLower($keyword) 
-                   OR toLower(j.name) CONTAINS toLower($keyword)
-                RETURN t.name AS textile, j.name AS jewelry, t.palette AS palette
-                LIMIT 1
-                """
-                keyword = prompt_text.split()[0] if prompt_text else "leather"
-                result = session.run(query, keyword=keyword).single()
-                if result:
+                row = session.run(
+                    """
+                    MATCH (t:Textile)-[:PAIRS_WITH]->(j:Jewelry)
+                    WHERE any(k IN $keywords WHERE toLower(t.name) CONTAINS k
+                                               OR toLower(j.name) CONTAINS k)
+                    RETURN t.name AS textile, j.name AS jewelry, t.palette AS palette
+                    LIMIT 1
+                    """,
+                    keywords=keywords,
+                ).single()
+                if row:
                     return {
-                        "textile_node": result["textile"],
-                        "jewelry_pairing": result["jewelry"],
-                        "color_palette": result["palette"] or ["#1A1714", "#4A4E69", "#7A2E22", "#D4AF37"]
+                        "textile_node": row["textile"],
+                        "jewelry_pairing": row["jewelry"],
+                        "color_palette": row["palette"] or DEFAULT_PALETTE,
                     }
-        except Exception as e:
-            print(f"Neo4j Query Note: {e}")
+        except Exception as e:  # noqa: BLE001
+            log.warning("Neo4j query note: %s", e)
 
-    # Fallback knowledge nodes based on prompt context
-    lowered = prompt_text.lower()
-    if "aso-oke" in lowered or "lagos" in lowered or "streetwear" in lowered:
+    low = prompt_text.lower()
+    if any(k in low for k in ("aso-oke", "lagos", "streetwear")):
         return {
             "textile_node": "Structured Metallic Aso-Oke & Heavy Calfskin Leather",
             "jewelry_pairing": "Layered Brushed Brass Ankle Cuffs",
-            "color_palette": ["#10121A", "#D4AF37", "#6B2D25", "#3A405A"]
+            "color_palette": ["#10121A", "#D4AF37", "#6B2D25", "#3A405A"],
         }
-    elif "silk" in lowered or "chiffon" in lowered or "luxe" in lowered:
+    if any(k in low for k in ("silk", "chiffon", "luxe")):
         return {
             "textile_node": "Hand-Dyed Indigo Adire Silk Satin",
             "jewelry_pairing": "Sculptural Raw Coral & Gold Collar",
-            "color_palette": ["#0A1128", "#1C2541", "#475569", "#D4AF37"]
+            "color_palette": ["#0A1128", "#1C2541", "#475569", "#D4AF37"],
         }
-    
     return {
         "textile_node": "Calfskin Leather & Wool Panel Hybrid",
         "jewelry_pairing": "Brushed Brass Hardware Accents",
-        "color_palette": ["#1A1714", "#4A4E69", "#7A2E22", "#D4AF37"]
+        "color_palette": DEFAULT_PALETTE,
     }
 
-class DesignRequest(BaseModel):
-    prompt: str
-    display_mode: str = "ghost_mannequin"
 
+# ------------------------------------------------------------------ routes ---
 @app.get("/")
 async def root():
-    return {"status": "online", "engine": "ARI Studio ACIE Engine"}
+    return {
+        "status": "online",
+        "engine": "ARI Studio ACIE Engine",
+        "cloudflare_configured": providers.cf_configured(),
+        "neo4j_configured": neo4j_driver is not None,
+        "image_model": providers.IMAGE_MODEL,
+    }
+
 
 @app.post("/api/synthesize-multimodal")
 async def synthesize_multimodal(
     prompt: str = Form(...),
     display_mode: str = Form("ghost_mannequin"),
-    fabric_image: UploadFile = File(None)
+    root_lens: str = Form(""),  # optional heritage lens, e.g. "Yoruba"
+    fabric_image: Optional[UploadFile] = File(None),  # accepted; analysed in a later step
+    images: List[UploadFile] = File(default=[]),
 ):
-    # 1. Query Knowledge Graph for Cultural & Material Context
-    kg_data = query_knowledge_graph(prompt)
-    
-    fabric_analysis = ""
-    
-    # 2. Analyze fabric texture upload if present via Gemini 2.5
-    if fabric_image and gemini_client:
-        try:
-            image_bytes = await fabric_image.read()
-            from google.genai import types
-            res = gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    "Analyze this fabric texture/material in 2 sentences.",
-                    types.Part.from_bytes(data=image_bytes, mime_type=fabric_image.content_type)
-                ]
-            )
-            if res and res.text:
-                fabric_analysis = res.text.strip()
-        except Exception as e:
-            print(f"Multimodal Fabric Analysis Note: {e}")
+    prompt = prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "Prompt is empty")
 
-    # Construct visual prompt
-    enriched_directive = (
-        f"{prompt}. Textile Base: {kg_data['textile_node']}. "
-        f"Jewelry Match: {kg_data['jewelry_pairing']}."
-    )
-    if fabric_analysis:
-        enriched_directive += f" Fabric Photo Texture: {fabric_analysis}"
+    kg = await asyncio.to_thread(query_knowledge_graph, prompt, root_lens)
+    spec = await providers.build_spec(prompt, display_mode, root_lens, [], kg)
 
-    if display_mode == "human_model":
-        visual_prompt = (
-            f"Editorial high fashion studio portrait of a model wearing {enriched_directive}, "
-            "vogue fashion studio backdrop, sharp focus, 8k resolution, photorealistic fabric texture"
-        )
-    else:
-        visual_prompt = (
-            f"Studio product photograph of {enriched_directive}, isolated floating garment, "
-            "ghost mannequin presentation, crisp details, sharp leather texture, dark studio background, 8k"
-        )
-
-    # 3. Visual Generation via Replicate FLUX 1.1 Pro
-    image_url = None
-    if REPLICATE_TOKEN:
-        try:
-            print(f"--> Attempting Replicate FLUX call with token: {REPLICATE_TOKEN[:6]}...")
-            output = replicate.run(
-                "black-forest-labs/flux-1.1-pro",
-                input={"prompt": visual_prompt, "aspect_ratio": "4:3"}
-            )
-            image_url = str(output)
-            print("--> Replicate FLUX Success!")
-        except Exception as e:
-            print(f"!!! REPLICATE FAILURE REASON: {e}")
-
-    # Guaranteed fallback image generator so UI never hangs on Synthesizing
-    if not image_url:
-        encoded = urllib.parse.quote(visual_prompt)
-        seed = abs(hash(prompt + display_mode)) % 100000
-        image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=768&seed={seed}&nologo=true&model=flux"
-
-    # 4. Generate Reasoning via Gemini 2.5
-    ai_reasoning = f"Haute-couture structural breakdown for '{prompt}'."
-    if gemini_client:
-        try:
-            res = gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=(
-                    f"You are the lead AI Creative Director for ARI Studio. Provide a 2-sentence haute-couture analysis for: '{enriched_directive}'."
-                )
-            )
-            if res and res.text:
-                ai_reasoning = res.text.strip()
-        except Exception as e:
-            print(f"Gemini Analysis Note: {e}")
+    visual_prompt = providers.build_image_prompt(spec)
+    log.info("visual_prompt: %s", visual_prompt)
+    img = await providers.generate_image(visual_prompt, seed_text=prompt + display_mode)
 
     return {
-        "concept_title": f"Synthesized Concept: {prompt.title()}",
+        "concept_title": f"Synthesized Concept: {prompt.title()}"[:120],
         "prompt_received": prompt,
-        "ai_reasoning": ai_reasoning,
-        "matched_vector_asset": f"Architectural Cut: {prompt.split()[0].title()}",
-        "image_url": image_url,
+        "ai_reasoning": spec["director_note"] or f"Design breakdown for '{prompt}'.",
+        "matched_vector_asset": f"Cut: {spec['subject']}"[:80],
+        "image_url": img.image_url,
         "glb_model_url": None,
-        "textile_node": fabric_analysis if fabric_analysis else kg_data["textile_node"],
-        "color_palette": kg_data["color_palette"],
-        "jewelry_pairing": kg_data["jewelry_pairing"],
-        "status": "success"
+        "textile_node": kg["textile_node"],
+        "color_palette": kg["color_palette"],
+        "jewelry_pairing": ", ".join(spec["metals_gems"]) or kg["jewelry_pairing"],
+        "spec": spec,
+        "provider": img.provider,
+        "degraded": img.degraded,  # the UI can show a "fallback used / retry" badge
+        "provider_errors": img.errors,
+        "references_analyzed": False,
+        "status": "success",
     }
