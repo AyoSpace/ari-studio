@@ -73,8 +73,7 @@ export default function ARIStudio() {
     }
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/synthesize-multimodal", {
-        method: "POST",
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000"}/api/synthesize-multimodal`, {
         body: formData,
       });
 
