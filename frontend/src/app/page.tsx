@@ -15,6 +15,8 @@ interface AcieData {
   color_palette: string[];
   jewelry_pairing: string;
   status: string;
+  provider?: string;
+  degraded?: boolean;
 }
 
 export default function ARIStudio() {
@@ -26,6 +28,7 @@ export default function ARIStudio() {
   const [fabricFile, setFabricFile] = useState<File | null>(null);
   const [fabricPreview, setFabricPreview] = useState<string | null>(null);
   const [acieData, setAcieData] = useState<AcieData | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -65,6 +68,7 @@ export default function ARIStudio() {
     if (!prompt.trim()) return;
 
     setLoading(true);
+    setError(null);
     const formData = new FormData();
     formData.append("prompt", prompt);
     formData.append("display_mode", displayMode);
@@ -72,9 +76,15 @@ export default function ARIStudio() {
       formData.append("fabric_image", fabricFile);
     }
 
+    const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 150000); // free hosting can take ~1 min to wake
+
     try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000"}/api/synthesize-multimodal`, {
+      const res = await fetch(`${apiBase}/api/synthesize-multimodal`, {
+        method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -83,9 +93,15 @@ export default function ARIStudio() {
 
       const data = await res.json();
       setAcieData(data);
-    } catch (error) {
-      console.error("Failed to fetch:", error);
+    } catch (err) {
+      console.error("Failed to fetch:", err);
+      setError(
+        err instanceof DOMException && err.name === "AbortError"
+          ? "The engine took too long to respond. Please try again."
+          : "Could not reach the ARI engine. Please try again in a moment."
+      );
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   };
@@ -339,6 +355,13 @@ export default function ARIStudio() {
               </div>
             )}
 
+            {loading && (
+              <p className="text-xs text-[#D4AF37] font-light max-w-lg">
+                Synthesizing your concept. The first request can take up to a minute while the engine wakes up.
+              </p>
+            )}
+            {error && <p className="text-xs text-red-400 max-w-lg">{error}</p>}
+
             <div className="space-y-2 max-w-lg">
               <p className="font-serif text-2xl text-[#F3F4F6] font-normal">
                 {acieData ? acieData.concept_title : "Awaiting Render Directive"}
@@ -353,6 +376,11 @@ export default function ARIStudio() {
                   <span className="text-[10px] uppercase tracking-[0.2em] px-3.5 py-1.5 rounded-full bg-[#1A1F2C] text-[#D4AF37] border border-[#D4AF37]/30">
                     {acieData.matched_vector_asset}
                   </span>
+                  {acieData.degraded && (
+                    <p className="mt-2 text-[10px] text-[#8C94A6]">
+                      Fallback image engine used. Press Generate Look again for the primary engine.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
