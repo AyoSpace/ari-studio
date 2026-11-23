@@ -124,9 +124,11 @@ no prose, no markdown, with exactly these keys:
  "materials": ["fabrics/leathers/etc"],
  "metals_gems": ["metals and stones, e.g. rose gold, sapphire"],
  "mood": "a few words",
+ "scene": "the background or setting the user asked for, e.g. 'sunlit Lagos street', else empty string",
  "director_note": "two sentences of expert design reasoning"}
 Rules: never drop or reinterpret a user-specified detail. Cultural context is inspiration, \
-never a restriction. Do not invent details the user did not imply.
+never a restriction. Do not invent details the user did not imply. Keep every material word (leather, silk, denim) \
+attached to the item it describes, and keep named objects (whip, chain, tassel) exactly as named.
 must_have holds ONLY details beyond the subject, as complete phrases. Example: for \
 'black trousers with a grey leather patch at each ankle' use subject 'black ankle-length \
 trousers' and must_have ['grey leather patch at each ankle']. Never split a phrase into words."""
@@ -162,6 +164,7 @@ def normalize_spec(raw: dict, prompt: str, display_mode: str, root_lens: str) ->
         "metals_gems": _list(raw.get("metals_gems")),
         "root_lens": (root_lens or "").strip(),  # user's choice only; never imposed
         "mood": str(raw.get("mood") or "").strip(),
+        "scene": str(raw.get("scene") or "").strip(),
         "display": display_mode,  # the UI toggle always wins
         "director_note": str(raw.get("director_note") or "").strip(),
         "verbatim": prompt,  # the user's own words, kept for the fallback prompt
@@ -218,29 +221,30 @@ async def build_spec(prompt, display_mode, root_lens, refs, kg) -> dict:
 
 
 def build_image_prompt(spec: dict) -> str:
-    """Short and concrete. The user's own details come first: FLUX weights early words."""
-    if spec.get("from_llm"):
-        lead = spec["subject"]
-        if spec["must_have"]:
-            lead += ", with " + " and ".join(spec["must_have"])
-    else:
-        lead = spec["verbatim"]  # no model available: trust the user's own wording
-    parts = [lead]
-    if spec["materials"]:
-        parts.append("made of " + ", ".join(spec["materials"]))
-    if spec["metals_gems"]:
-        parts.append("featuring " + ", ".join(spec["metals_gems"]))
+    """The user's own words lead (FLUX weights early words); framing and scene follow."""
+    lead = spec["verbatim"].strip().rstrip(".")
+    low = lead.lower()
+    extras = []
+    for item in spec["materials"] + spec["metals_gems"]:
+        if item.lower() not in low:
+            extras.append(item)
+    if extras:
+        lead += ", featuring " + ", ".join(extras)
     if spec["root_lens"]:
-        parts.append(f"rooted in {spec['root_lens']} craft heritage")
+        lead += f", rooted in {spec['root_lens']} craft heritage"
     if spec["mood"]:
-        parts.append(spec["mood"])
-    body = ", ".join(parts)
+        lead += ", " + spec["mood"]
+    scene = spec.get("scene") or ""
 
     if spec["category"] == "jewelry":
-        style = "macro jewelry product photograph, soft studio light, true metal reflections, sharp gem facets"
-    elif spec["display"] == "human_model":
-        style = "editorial fashion photograph of a model wearing it, full outfit visible, studio backdrop, photorealistic fabric"
+        style = "macro jewelry photograph, soft studio light, true metal reflections, sharp gem facets"
+        if scene:
+            style += f", set against {scene}"
+    elif spec["display"] == "human_model" or scene:
+        bg = scene or "a clean studio backdrop"
+        style = (f"full-length editorial fashion photograph of a model wearing it, "
+                 f"entire outfit visible from head to shoes, background: {bg}, natural light, photorealistic")
     else:
-        style = "studio product photograph, ghost mannequin, dark studio background, crisp fabric detail"
-    return f"{body}. {style}"
-
+        style = ("full-length studio product photograph of the entire garment from waist to hem, "
+                 "centered, wide framing, ghost mannequin, dark studio background, photorealistic material texture")
+    return f"{lead}. {style}"
