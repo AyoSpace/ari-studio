@@ -243,8 +243,7 @@ def build_image_prompt(spec: dict) -> str:
     elif spec["display"] == "human_model" or scene:
         bg = scene or "a clean studio backdrop"
         style = (f"full-length editorial fashion photograph of a model wearing it, "
-                 f"entire outfit visible from head to shoes, background: {bg}, natural light, photorealistic")
-    else:
+"front view facing the camera, full body shot from head to shoes with empty space above and below, shot from a distance with a wide-angle lens, background: {bg}, natural light, photorealistic")    else:
         style = ("full-length studio product photograph of the entire garment from waist to hem, "
                  "centered, wide framing, ghost mannequin, dark studio background, photorealistic material texture")
     return f"{lead}. {style}"
